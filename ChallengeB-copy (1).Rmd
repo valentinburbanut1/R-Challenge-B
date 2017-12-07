@@ -1,0 +1,344 @@
+---
+title: "Challenge B"
+author: "Valentin Burban & Victor Vasse"
+date: "4 d?cembre 2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+https://github.com/valentinburbanut1/R-Challenge-B
+
+```{r load package, include=FALSE}
+library(readxl)
+library(lmtest)
+library(pander)
+library(car)
+library(sandwich)
+library(readr)
+library(randomForest)
+library(tidyverse)
+library(dplyr)
+library(np)
+library(caret)
+```
+
+## Task 1B - Predicting house prices in Ames, Iowa (continued)
+
+### Step 1 - Choose a ML technique : non-parametric kernel estimation, random forests, etc. . . Give a brief intuition of how it works
+
+We choose randomForest technique. In fact, this method generate a forest (ie several decision trees) %in% a random way. So, there is a multitude of week model that they are combined to build a strong one. Mecanisum, If we want n trees, n subsets of our datas are randomly taken, with replacement. So, %in% average, this correspond to the random sampling of %63,2% percentages of the population. For each subset, a decision tree is created, with some nodes, branch.  Some segmentation variables are randomly choosen, and the tree is splited according to the best segmentation.  Then, when news datas are implement %in% our model, they will be evaluation by all the trees.
+
+###Step 2 - Train the chosen technique on the training data. Hint : packages np for non-parametric regressions, randomForest for random forests. Don't use the variable Id as a feature. 
+
+As a first step, we clean our data : detection and suppression of N/A observations. Then, we launch a regression : train.rf.
+
+```{r, T1S2, include=FALSE}
+train <-  read.csv(file = file.choose())
+# here i summarize the data set using the function sum(is.na()); is.na(.) 
+# it gives me a column that is equal to TRUE when the row has a missing value (NA) or FALSE when it doesn't, so sum(is.na(.)) gives me the number of missing values for a column,
+#then i gather the data to make it nicer, then i drop all the variables that do not have missing observations
+train %>% summarise_all(.funs = funs(sum(is.na(.)))) %>% gather(key = "feature", value = "missing.observations") %>% filter(missing.observations > 0)
+
+#I remove the variables that have more than 100 missing observations
+#Except Fence or Alley maybe, there are not very critical for determining the price of a house:
+remove.vars <- train %>% summarise_all(.funs = funs(sum(is.na(.)))) %>% gather(key = "feature", value = "missing.observations") %>% filter(missing.observations > 100) %>% select(feature) %>% unlist
+train <- train %>% select(- one_of(remove.vars))
+
+#For the rest of the variables with missing values, I remove the observations with the missing values
+train %>% summarise_all(.funs = funs(sum(is.na(.)))) %>% gather(key = "feature", value = "missing.observations") %>% filter(missing.observations > 0)
+train <- train %>% filter(is.na(GarageType) == FALSE, is.na(MasVnrType) == FALSE, is.na(BsmtFinType2) == FALSE, is.na(BsmtExposure) == FALSE, is.na(Electrical) == FALSE)
+
+
+train.rf <- randomForest(SalePrice ~ . -Id, data = train, ntree = 500, na.action = na.roughfix)
+print(train.rf)
+```
+
+###Step 3 - Make predictions on the test data, and compare them to the predictions of a linear regression of your choice.
+
+```{r, T1S3, include=FALSE}
+
+test <- read.csv(file = file.choose())
+common <- intersect(names(train), names(test))
+for (p in common) {
+  if (class(train [[p]]) == "factor") {
+    levels(test[[p]]) <- levels(train[[p]])
+  }
+}
+
+
+lm_model_2 <- lm(SalePrice ~ MSZoning + LotArea + Neighborhood  + YearBuilt + OverallQual, data = train)
+summary(lm_model_2)
+prediction <- data.frame(Id = test$Id, SalePrice_predict = predict(lm_model_2, test, type="response"))
+prediction <- prediction[,2]
+
+# Use the model that I just chose to make predictions for the test set
+predict <- data.frame(Id = test$Id, SalePrice_predict = predict(train.rf, test, type="response"))
+predict <- predict[,2]
+```
+
+3 For the last step, we have choosen the following regression : lm(SalePrice ~ MSZoning + LotArea + Neighborhood  + YearBuilt + OverallQual, data = train). As a comparaison, we can take this informations :
+
+``` {r, answer 1.3.1, echo = FALSE}
+pander(summary(predict))
+pander(summary(prediction))
+```
+
+In the first table we find the relative informations about the randomForest predictions model. In the second table we find the relative informations about the linear predictions model. 
+
+##Task 2B - Overfitting in Machine Learning (continued)
+
+```{r, T2, include=FALSE}
+
+#As a first step, we use the same code than in the previous Challenge. We separate our simulation into 2 subset : test & training. 
+
+rm(list = ls())
+set.seed(1)
+Nsim <- 150
+b <- c(0,1)
+x0 <- rep(1, Nsim)
+x1 <- rnorm(n = Nsim)
+
+X <- cbind(x0, x1^3)
+y.true <- X %*% b
+
+eps <- rnorm(n = Nsim)
+y <- X %*% b + eps
+
+df <- tbl_df(y[,1]) %>% rename(y = value) %>% bind_cols(tbl_df(x1)) %>% rename(x = value) %>% bind_cols(tbl_df(y.true[,1])) %>% rename(y.true = value)
+
+
+training.index <- createDataPartition(y = y, times = 1, p = 0.8)
+df <- df %>% mutate(which.data = ifelse(1:n() %in% training.index$Resample1, "training", "test"))
+
+training <- df %>% filter(which.data == "training")
+test <- df %>% filter(which.data == "test")
+
+lm.fit <- lm(y ~ x, data = training)
+summary(lm.fit)
+
+df <- df %>% mutate(y.lm = predict(object = lm.fit, newdata = df))
+training <- training %>% mutate(y.lm = predict(object = lm.fit))
+```
+
+
+```{r, T2S1, include=FALSE}
+################Step 1 - Estimate a low-flexibility local linear model on the training data. For that, you can use function npreg the package np. Choose ll for
+################the method (local linear), and a bandwidth of 0.5; Call this model ll.fit.lowflex
+
+ll.fit.lowflex <- npreg(y ~ x, data = training, method = "ll", bws = 0.5)
+panderOptions("digits", 5)
+summary(ll.fit.lowflex)
+```
+
+```{r, T2S2, include=FALSE}
+
+################Step 2 - Estimate a high-flexibility local linear model on the training data. For that, you can use function npreg the package np. Choose ll for
+################the method (local linear), and a bandwidth of 0.01; Call this model ll.fit.highflex
+
+ll.fit.highflex <- npreg(y ~ x, data = training, method = "ll", bws = 0.01)
+panderOptions("digits", 5)
+summary(ll.fit.highflex)
+```
+
+```{r, T2S3, include=FALSE}
+
+################Step 3 - Plot the scatterplot of x-y, along with the predictions of ll.fit.lowflex and ll.fit.highflex, on only the training data. See Figure 1
+
+y.ll.highflex = data.frame(predict(object = ll.fit.highflex, newdata = training)) #We take output of both predictions
+y.ll.lowflex = data.frame(predict(object= ll.fit.lowflex, newdata=training))
+
+ggplot(training) + geom_point(mapping = aes(x = x, y = y)) + 
+  geom_line(mapping = aes(x = x, y = y.true)) + 
+  geom_line(mapping = aes(x = x, y = y.ll.lowflex), color = "blue") + 
+  geom_line(mapping = aes(x = x, y = y.ll.highflex), color = "orange")
+```
+
+
+###Step 4 - Between the two models, which predictions are more variable? Which predictions have the least bias?
+
+We can see that the variance of lowflex model is lower than the variance of highflex model (2.764222 against 7.569123). 
+Moreover, the biais of highflex is larger than the biais of lowflex (0.1022669 against 0.09576519)
+
+```{r, T2S4, include=FALSE}
+
+################Step 4 - Between the two models, which predictions are more variable? Which predictions have the least bias?
+
+y.ll.lowflex <- predict(object = ll.fit.lowflex, newdata = training)
+y.ll.highflex <- predict(object = ll.fit.highflex, newdata = training)
+
+var(y.ll.lowflex)
+var(y.ll.highflex)
+training <- data.frame(training)
+biaisy.ll.lowflex <- mean(y.ll.lowflex) - mean(training[,3])
+biaisy.ll.lowflex
+biaisy.ll.highflex <- mean(y.ll.highflex) - mean(training[,3])
+biaisy.ll.highflex
+
+```
+
+
+###Step 5 - Plot the scatterplot of x-y, along with the predictions of ll.fit.lowflex and ll.fit.highflex now using the test data. Which predictions are more variable? What happened to the bias of the least biased model?
+
+We have computed variances of both predictions. We observe that the variance associate at the prediction with highflex model is higher than the variances of lowflex model. (6.582451 against 2.572402). Moreover, the biais of the highflex model is : 0.1227896, whereas the biais of lowflex is -0.08512817. Then, we observe that the biais of the least biased model becomes negative. 
+
+```{r, T2S5, include=FALSE}
+
+################Step 5 - Plot the scatterplot of x-y, along with the predictions of ll.fit.lowflex and ll.fit.highflex now
+################using the test data. Which predictions are more variable? What happened to the bias of the least biased model?
+
+ytest.ll.highflex <-  predict(object = ll.fit.highflex, newdata = test)
+ytest.ll.lowflex <- predict(object= ll.fit.lowflex, newdata=test)
+
+var(ytest.ll.highflex)
+var(ytest.ll.lowflex)
+test <- data.frame(test)
+biaisy.ll.highflex2 <- mean(ytest.ll.highflex) - mean(test[,3])
+biaisy.ll.highflex2
+biaisy.ll.lowflex2 <- mean(ytest.ll.lowflex) - mean(test[,3])
+biaisy.ll.lowflex2
+
+ggplot(test) + geom_point(mapping = aes(x = x, y = y)) + 
+  geom_line(mapping = aes(x = x, y = y.true)) + 
+  geom_line(mapping = aes(x = x, y = ytest.ll.lowflex), color = "blue") + 
+  geom_line(mapping = aes(x = x, y = ytest.ll.highflex), color = "orange")
+
+```
+
+
+```{r, T2S6, include=FALSE}
+
+################Step 6 - Create a vector of bandwidth going from 0.01 to 0.5 with a step of 0.001
+
+bw <- seq(0.01, 0.5, by = 0.001)
+
+```
+
+###Step 7 - Estimate a local linear model y ~ x on the training data with each bandwidth.
+
+For this step, we use the function : lapply, in a purpose to avoid for loop, which take more time. 
+
+```{r, T2S7, include=FALSE}
+
+################Step 7 - Estimate a local linear model y ~ x on the training data with each bandwidth.
+
+llbw.fit <- lapply(X = bw, FUN = function(bw) {npreg(y ~ x, data = training, method = "ll", bws = bw)})
+```
+
+```{r, T2S8, include=FALSE}
+
+################Step 8 - Compute for each bandwidth the MSE on the training data
+
+mse.training <- function(fit.model){
+  predictions <- predict(object = fit.model, newdata = training)
+  training %>% mutate(squared.error = (y - predictions)^2) %>% summarize(mse = mean(squared.error))
+}
+
+mse.train.results <- unlist(lapply(X = llbw.fit, FUN = mse.training))
+mse.train.results
+```
+
+```{r, T2S9, include=FALSE}
+################Step 9 - Compute for each bandwidth the MSE on the test data.
+
+mse.test <- function(fit.model){
+  predictions <- predict(object = fit.model, newdata = test)
+  test %>% mutate(squared.error = (y - predictions)^2) %>% summarize(mse = mean(squared.error))
+}
+
+mse.test.results <- unlist(lapply(X = llbw.fit, FUN = mse.test))
+mse.test.results
+```
+
+
+###Step 10 - Draw on the same plot how the MSE on training data, and test data, change when the bandwidth increases. Conclude.
+
+We observe that, the "training MSE" takes its minimal value when the bandwidth is close to zero. The "test MSE" takes its minimal value when bandwidth is around 0.23.
+
+```{r, T2S10, include=FALSE}
+
+################Step 10 - Draw on the same plot how the MSE on training data, and test data, change when the bandwidth increases. Conclude.
+
+mse.df <- tbl_df(data.frame(bandwidth = bw, mse.train = mse.train.results, mse.test = mse.test.results))
+
+ggplot(mse.df) + 
+  geom_line(mapping = aes(x = bandwidth, y = mse.train), color = "blue") +
+  geom_line(mapping = aes(x = bandwidth, y = mse.test), color = "orange")
+```
+
+
+##Task 3B - Privacy regulation compliance in France
+
+###Step 1 - Import the CNIL dataset from the Open Data Portal. (1 point)
+
+```{r, T3S1, include=FALSE}
+
+################Step 1 - Import the CNIL dataset from the Open Data Portal.
+
+system.time(data <- read_excel("C:/Users/Vico/Desktop/Vasse&Burban/data.xlsx"))
+system.time(data2 <- read_excel("C:/Users/Vico/Desktop/Vasse&Burban/datatask32.xlsx"))
+attach(data)
+attach(data2)
+summary(data)
+summary(data2)
+```
+
+We have to report time of our compilations. 
+For the first import : 
+## user   system elapsed
+## 661.71 210.21 1049.96
+
+For the second import : 
+## user system elapsed
+## 1.87 0.01 1.92
+
+###Step 2 - Show a (nice) table with the number of organizations that has nominated a CNIL per department. HINT : A department in France is uniquely identified by the first two digits of the postcode. 
+
+In this question, we did an euclidean division to have only the departement. Then, we used the function : table to sort and count by departments in a nice table
+
+```{r, T3S2, include=FALSE}
+
+dept <- CODPOS%/%1000 #euclidean ratio to find the department
+nicetable <- table(factor(dept, levels = 1:100))
+nicetable <- data.frame(nicetable)
+names(nicetable)[1] <- "Department"
+attach(nicetable)
+a <- nrow(data) - sum(Freq) #Should be egual to 0
+a #there is a problem : Question : Is there any N/A ?  
+sum(is.na(data[,"CODPOS"])) #=a --> OK
+```
+
+
+###Step 3 - Merge the information from the SIREN dataset into the CNIL data. Explain the method you use. HINT : In the SIREN dataset, there are some rows that refer to the same SIREN number, use the most up to date information about each company.
+
+In this case, we will do like SQL (with left inner join). To do that, we used the function merge. Then a new table is created, with observations that we want.
+
+```{r, T3S3, include=FALSE}
+
+##################Step 3 - Merge the information from the SIREN dataset into the CNIL data. Explain the method you use.
+##################HINT : In the SIREN dataset, there are some rows that refer to the same SIREN number, use the most up to date information about each company.
+
+names(data2)[1] <- "SIREN"
+b <- merge(data, data2, sort = FALSE, all = TRUE, by="SIREN")
+```
+
+###Step 4 - Plot the histogram of the size of the companies that nominated a CIL. Comment.
+
+We have the table which correspond to the informations that we want. But, given the distribution, we suspect an error. 
+
+```{r, T3S4, include=FALSE}
+
+#################Step 4 - Plot the histogram of the size of the companies that nominated a CIL. Comment.
+
+b <- data.frame(b)
+unique(b$LIBTEFEN)
+
+d <- b$LIBTEFEN
+n <- factor(c(d, levels = unique(d)))
+entreprise <- table(factor(c(d, levels = unique(b$LIBTEFEN))))
+entreprise <- data.frame(entreprise)
+```
+
+
